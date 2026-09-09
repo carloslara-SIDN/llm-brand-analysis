@@ -170,7 +170,7 @@ def init_clients():
 # 5. CONSULTA INCREMENTAL
 def fetch_unprocessed_responses(bq_client):
     query = f"""
-        SELECT b.response_id, b.query_id, b.brand, b.query, b.response, b.llm_model
+        SELECT b.response_id, b.query_id, b.brand, b.query, b.response, b.model
         FROM `{BRONZE_TABLE}` b
         LEFT JOIN `{SILVER_TABLE}` s ON b.response_id = s.response_id
         WHERE s.response_id IS NULL AND b.status = 'completed' AND TRIM(b.response) != ''
@@ -196,7 +196,7 @@ def analyze_single_response(openai_client, row, target_brand, run_id):
 
     record = {
         "query_id": row["query_id"], "response_id": row["response_id"], "brand": target_brand,
-        "query": row["query"], "response": row["response"], "llm_model": row["llm_model"],
+        "query": row["query"], "response": row["response"], "model": row["model"],
         "analysis_run_id": run_id, "source_file": "cloud_run_incremental",
         "prompt_version": PROMPT_VERSION, "alias_version": ALIAS_VERSION,
         "analysis_model": ANALYSIS_MODEL, "analysis_input_tokens": 0,

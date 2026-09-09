@@ -25,7 +25,6 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
 ]
 
-# 2. INICIALIZACIÓN DE CLIENTES
 def init_clients():
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     load_dotenv(dotenv_path=os.path.join(root_dir, '.env'), encoding="utf-8-sig")
@@ -36,7 +35,6 @@ def init_clients():
         credentials = service_account.Credentials.from_service_account_file(cred_path, scopes=SCOPES)
         bq_client = bigquery.Client(project=PROJECT_ID, credentials=credentials)
     else:
-        # Autenticación automática transparente para Cloud Run Job
         bq_client = bigquery.Client(project=PROJECT_ID)
 
     openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=TIMEOUT_SECONDS) if os.getenv("OPENAI_API_KEY") else None
@@ -44,8 +42,6 @@ def init_clients():
 
     return bq_client, openai_client, gemini_client
 
-
-# 3. FUNCIONES DE EXTRACCIÓN Y TELEMETRÍA
 def fetch_openai(client, prompt: str):
     start = perf_counter()
     res = {
@@ -86,7 +82,6 @@ def fetch_openai(client, prompt: str):
     res["duration_seconds"] = round(perf_counter() - start, 3)
     return res
 
-
 def fetch_gemini(client, prompt: str):
     start = perf_counter()
     res = {
@@ -116,8 +111,6 @@ def fetch_gemini(client, prompt: str):
     res["duration_seconds"] = round(perf_counter() - start, 3)
     return res
 
-
-# 4. EJECUCIÓN PRINCIPAL DEL JOB
 def main():
     bq_client, openai_client, gemini_client = init_clients()
 
@@ -132,76 +125,47 @@ def main():
     bq_client.query(refresh_query).result()
     print("¡Tabla de queries actualizada con éxito!")
 
-    print(f"[{datetime.now(timezone.utc).isoformat()}] Leyendo queries desde `{SOURCE_TABLE}`...")
-    queries_df = bq_client.query(f"SELECT query_id, brand, topic, query_type, query FROM `{SOURCE_TABLE}`").to_dataframe()
+    # EXTRAEMOS LAS 3 ÚLTIMAS QUERIES (ORDER BY DESC)
+    print(f"[{datetime.now(timezone.utc).isoformat()}] Leyendo las 3 ÚLTIMAS queries desde `{SOURCE_TABLE}` (MODO PRUEBA 2)...")
+    queries_df = bq_client.query(f"SELECT query_id, brand, topic, query_type, query FROM `{SOURCE_TABLE}` ORDER BY query_id DESC LIMIT 3").to_dataframe()
 
     if queries_df.empty:
         print("La tabla de origen está vacía.")
         return
 
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + "_TEST2"
     started_at_utc = datetime.now(timezone.utc)
     records = []
 
-    print(f"Iniciando ejecucion run_id: {run_id} | Queries a procesar: {len(queries_df)}")
+    print(f"Iniciando ejecucion de prueba run_id: {run_id} | Queries a procesar: {len(queries_df)}")
 
     for idx, row in queries_df.iterrows():
         print(f"Procesando [{idx+1}/{len(queries_df)}] Query ID: {row['query_id']}")
 
         for iteration in range(1, ITERATIONS_PER_QUERY + 1):
             
-            # OpenAI
             if openai_client:
                 oai = fetch_openai(openai_client, row["query"])
                 records.append({
-                    "query_id": row["query_id"],
-                    "brand": row["brand"],
-                    "topic": row["topic"],
-                    "query_type": row["query_type"],
-                    "query": row["query"],
-                    "run_id": run_id,
-                    "requested_model": oai["requested_model"],
-                    "model": oai["model"],
-                    "response_id": oai["response_id"],
-                    "response": oai["response"],
-                    "status": oai["status"],
-                    "incomplete_reason": oai["incomplete_reason"],
-                    "input_tokens": oai["input_tokens"],
-                    "output_tokens": oai["output_tokens"],
-                    "total_tokens": oai["total_tokens"],
-                    "started_at_utc": started_at_utc,
-                    "duration_seconds": oai["duration_seconds"],
-                    "reasoning_effort": oai["reasoning_effort"],
-                    "max_output_tokens": oai["max_output_tokens"],
-                    "error_type": oai["error_type"],
-                    "http_status": oai["http_status"]
+                    "query_id": row["query_id"], "brand": row["brand"], "topic": row["topic"],
+                    "query_type": row["query_type"], "query": row["query"], "run_id": run_id,
+                    "requested_model": oai["requested_model"], "model": oai["model"], "response_id": oai["response_id"],
+                    "response": oai["response"], "status": oai["status"], "incomplete_reason": oai["incomplete_reason"],
+                    "input_tokens": oai["input_tokens"], "output_tokens": oai["output_tokens"], "total_tokens": oai["total_tokens"],
+                    "started_at_utc": started_at_utc, "duration_seconds": oai["duration_seconds"], "reasoning_effort": oai["reasoning_effort"],
+                    "max_output_tokens": oai["max_output_tokens"], "error_type": oai["error_type"], "http_status": oai["http_status"]
                 })
 
-            # Gemini
             if gemini_client:
                 gem = fetch_gemini(gemini_client, row["query"])
                 records.append({
-                    "query_id": row["query_id"],
-                    "brand": row["brand"],
-                    "topic": row["topic"],
-                    "query_type": row["query_type"],
-                    "query": row["query"],
-                    "run_id": run_id,
-                    "requested_model": gem["requested_model"],
-                    "model": gem["model"],
-                    "response_id": gem["response_id"],
-                    "response": gem["response"],
-                    "status": gem["status"],
-                    "incomplete_reason": gem["incomplete_reason"],
-                    "input_tokens": gem["input_tokens"],
-                    "output_tokens": gem["output_tokens"],
-                    "total_tokens": gem["total_tokens"],
-                    "started_at_utc": started_at_utc,
-                    "duration_seconds": gem["duration_seconds"],
-                    "reasoning_effort": gem["reasoning_effort"],
-                    "max_output_tokens": gem["max_output_tokens"],
-                    "error_type": gem["error_type"],
-                    "http_status": gem["http_status"]
+                    "query_id": row["query_id"], "brand": row["brand"], "topic": row["topic"],
+                    "query_type": row["query_type"], "query": row["query"], "run_id": run_id,
+                    "requested_model": gem["requested_model"], "model": gem["model"], "response_id": gem["response_id"],
+                    "response": gem["response"], "status": gem["status"], "incomplete_reason": gem["incomplete_reason"],
+                    "input_tokens": gem["input_tokens"], "output_tokens": gem["output_tokens"], "total_tokens": gem["total_tokens"],
+                    "started_at_utc": started_at_utc, "duration_seconds": gem["duration_seconds"], "reasoning_effort": gem["reasoning_effort"],
+                    "max_output_tokens": gem["max_output_tokens"], "error_type": gem["error_type"], "http_status": gem["http_status"]
                 })
 
     if records:
@@ -211,7 +175,7 @@ def main():
         job_config = bigquery.LoadJobConfig(write_disposition="WRITE_APPEND")
         job = bq_client.load_table_from_dataframe(output_df, RAW_TABLE, job_config=job_config)
         job.result()
-        print("¡Proceso de extracción completado y guardado en BigQuery con éxito!")
+        print("¡Proceso de PRUEBA 2 completado y guardado en BigQuery con éxito!")
 
 if __name__ == "__main__":
     main()
