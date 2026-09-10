@@ -1,11 +1,12 @@
 import os
 import uuid
+import concurrent.futures
 from datetime import datetime, timezone
 from time import perf_counter
 import pandas as pd
 from dotenv import load_dotenv
 
-import google.auth  # Añadido para gestionar las credenciales de Cloud Run
+import google.auth
 from google.cloud import bigquery
 from google.oauth2 import service_account
 from openai import OpenAI, APIError
@@ -19,6 +20,7 @@ RAW_TABLE = f"{PROJECT_ID}.llm_analysis_bronze.llm_responses_raw"
 
 ITERATIONS_PER_QUERY = 3
 TIMEOUT_SECONDS = 60
+MAX_WORKERS = 10  # Límite de peticiones simultáneas a las APIs para evitar el timeout
 
 SCOPES = [
     "https://www.googleapis.com/auth/bigquery",
@@ -119,6 +121,70 @@ def fetch_gemini(client, prompt: str):
     return res
 
 
+def process_row_iteration(row_dict, iteration, openai_client, gemini_client, run_id, started_at_utc):
+    """
+    Procesa una iteración para una query concreta. 
+    Se ejecutará en paralelo por el ThreadPoolExecutor.
+    """
+    iteration_records = []
+    
+    # Llamada OpenAI
+    if openai_client:
+        oai = fetch_openai(openai_client, row_dict["query"])
+        iteration_records.append({
+            "query_id": row_dict["query_id"],
+            "brand": row_dict["brand"],
+            "topic": row_dict["topic"],
+            "query_type": row_dict["query_type"],
+            "query": row_dict["query"],
+            "run_id": run_id,
+            "requested_model": oai["requested_model"],
+            "model": oai["model"],
+            "response_id": oai["response_id"],
+            "response": oai["response"],
+            "status": oai["status"],
+            "incomplete_reason": oai["incomplete_reason"],
+            "input_tokens": oai["input_tokens"],
+            "output_tokens": oai["output_tokens"],
+            "total_tokens": oai["total_tokens"],
+            "started_at_utc": started_at_utc,
+            "duration_seconds": oai["duration_seconds"],
+            "reasoning_effort": oai["reasoning_effort"],
+            "max_output_tokens": oai["max_output_tokens"],
+            "error_type": oai["error_type"],
+            "http_status": oai["http_status"]
+        })
+
+    # Llamada Gemini
+    if gemini_client:
+        gem = fetch_gemini(gemini_client, row_dict["query"])
+        iteration_records.append({
+            "query_id": row_dict["query_id"],
+            "brand": row_dict["brand"],
+            "topic": row_dict["topic"],
+            "query_type": row_dict["query_type"],
+            "query": row_dict["query"],
+            "run_id": run_id,
+            "requested_model": gem["requested_model"],
+            "model": gem["model"],
+            "response_id": gem["response_id"],
+            "response": gem["response"],
+            "status": gem["status"],
+            "incomplete_reason": gem["incomplete_reason"],
+            "input_tokens": gem["input_tokens"],
+            "output_tokens": gem["output_tokens"],
+            "total_tokens": gem["total_tokens"],
+            "started_at_utc": started_at_utc,
+            "duration_seconds": gem["duration_seconds"],
+            "reasoning_effort": gem["reasoning_effort"],
+            "max_output_tokens": gem["max_output_tokens"],
+            "error_type": gem["error_type"],
+            "http_status": gem["http_status"]
+        })
+
+    return iteration_records
+
+
 # 4. EJECUCIÓN PRINCIPAL DEL JOB
 def main():
     bq_client, openai_client, gemini_client = init_clients()
@@ -143,68 +209,42 @@ def main():
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     started_at_utc = datetime.now(timezone.utc)
-    records = []
-
+    
     print(f"Iniciando ejecucion run_id: {run_id} | Queries a procesar: {len(queries_df)}")
 
-    for idx, row in queries_df.iterrows():
-        print(f"Procesando [{idx+1}/{len(queries_df)}] Query ID: {row['query_id']}")
-
+    # Preparar la lista de tareas para ejecutar en paralelo
+    tasks = []
+    for _, row in queries_df.iterrows():
+        row_dict = row.to_dict()
         for iteration in range(1, ITERATIONS_PER_QUERY + 1):
-            
-            # OpenAI
-            if openai_client:
-                oai = fetch_openai(openai_client, row["query"])
-                records.append({
-                    "query_id": row["query_id"],
-                    "brand": row["brand"],
-                    "topic": row["topic"],
-                    "query_type": row["query_type"],
-                    "query": row["query"],
-                    "run_id": run_id,
-                    "requested_model": oai["requested_model"],
-                    "model": oai["model"],
-                    "response_id": oai["response_id"],
-                    "response": oai["response"],
-                    "status": oai["status"],
-                    "incomplete_reason": oai["incomplete_reason"],
-                    "input_tokens": oai["input_tokens"],
-                    "output_tokens": oai["output_tokens"],
-                    "total_tokens": oai["total_tokens"],
-                    "started_at_utc": started_at_utc,
-                    "duration_seconds": oai["duration_seconds"],
-                    "reasoning_effort": oai["reasoning_effort"],
-                    "max_output_tokens": oai["max_output_tokens"],
-                    "error_type": oai["error_type"],
-                    "http_status": oai["http_status"]
-                })
+            tasks.append((row_dict, iteration))
 
-            # Gemini
-            if gemini_client:
-                gem = fetch_gemini(gemini_client, row["query"])
-                records.append({
-                    "query_id": row["query_id"],
-                    "brand": row["brand"],
-                    "topic": row["topic"],
-                    "query_type": row["query_type"],
-                    "query": row["query"],
-                    "run_id": run_id,
-                    "requested_model": gem["requested_model"],
-                    "model": gem["model"],
-                    "response_id": gem["response_id"],
-                    "response": gem["response"],
-                    "status": gem["status"],
-                    "incomplete_reason": gem["incomplete_reason"],
-                    "input_tokens": gem["input_tokens"],
-                    "output_tokens": gem["output_tokens"],
-                    "total_tokens": gem["total_tokens"],
-                    "started_at_utc": started_at_utc,
-                    "duration_seconds": gem["duration_seconds"],
-                    "reasoning_effort": gem["reasoning_effort"],
-                    "max_output_tokens": gem["max_output_tokens"],
-                    "error_type": gem["error_type"],
-                    "http_status": gem["http_status"]
-                })
+    records = []
+    
+    # Lanzar tareas concurrentes con ThreadPoolExecutor
+    print(f"Ejecutando {len(tasks)} iteraciones en paralelo ({MAX_WORKERS} hilos)...")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = [
+            executor.submit(
+                process_row_iteration, 
+                task_row, task_iter, 
+                openai_client, gemini_client, 
+                run_id, started_at_utc
+            ) 
+            for task_row, task_iter in tasks
+        ]
+
+        # Recoger resultados conforme terminan
+        for i, future in enumerate(concurrent.futures.as_completed(futures)):
+            try:
+                iteration_results = future.result()
+                records.extend(iteration_results)
+                
+                # Imprimir progreso cada 20 tareas completadas para no saturar los logs
+                if (i + 1) % 20 == 0 or (i + 1) == len(tasks):
+                    print(f"Completadas {i + 1}/{len(tasks)} iteraciones.")
+            except Exception as e:
+                print(f"Error procesando iteración: {e}")
 
     if records:
         output_df = pd.DataFrame(records)
