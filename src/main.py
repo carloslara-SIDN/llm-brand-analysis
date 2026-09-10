@@ -5,6 +5,7 @@ from time import perf_counter
 import pandas as pd
 from dotenv import load_dotenv
 
+import google.auth  # Añadido para gestionar las credenciales de Cloud Run
 from google.cloud import bigquery
 from google.oauth2 import service_account
 from openai import OpenAI, APIError
@@ -36,8 +37,9 @@ def init_clients():
         credentials = service_account.Credentials.from_service_account_file(cred_path, scopes=SCOPES)
         bq_client = bigquery.Client(project=PROJECT_ID, credentials=credentials)
     else:
-        # Autenticación automática transparente para Cloud Run Job
-        bq_client = bigquery.Client(project=PROJECT_ID)
+        # Autenticación automática para Cloud Run Job FORZANDO LOS SCOPES DE DRIVE
+        credentials, project = google.auth.default(scopes=SCOPES)
+        bq_client = bigquery.Client(project=PROJECT_ID, credentials=credentials)
 
     openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=TIMEOUT_SECONDS) if os.getenv("OPENAI_API_KEY") else None
     gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY")) if os.getenv("GEMINI_API_KEY") else None
@@ -125,10 +127,10 @@ def main():
         raise ValueError("No se han configurado API Keys válidas en el entorno.")
 
     print(f"[{datetime.now(timezone.utc).isoformat()}] Sincronizando tabla nativa con Google Sheets...")
-    refresh_query = f"""
-        CREATE OR REPLACE TABLE `{SOURCE_TABLE}` AS
-        SELECT * FROM `{STG_TABLE}`
-    """
+    refresh_query = """
+        CREATE OR REPLACE TABLE `{0}` AS
+        SELECT * FROM `{1}`
+    """.format(SOURCE_TABLE, STG_TABLE)
     bq_client.query(refresh_query).result()
     print("¡Tabla de queries actualizada con éxito!")
 
